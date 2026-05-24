@@ -36,9 +36,9 @@ export async function ollamaChat(messages: OllamaMessage[]) {
       messages,
       stream: false,
       options: {
-        temperature: 1.0,
-        top_p: 0.95,
-        top_k: 64
+        temperature: 0.2,
+        top_p: 0.9,
+        top_k: 40
       }
     })
   });

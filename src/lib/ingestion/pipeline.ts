@@ -6,10 +6,11 @@ import type { IntelligenceDocument, RawSourceItem } from "@/lib/types";
 
 export async function fetchSources() {
   const adapters = getAdapters();
-  const results = await Promise.allSettled(adapters.map(async (adapter) => ({ adapter: adapter.name, items: await adapter.fetch() })));
+  const results = await Promise.allSettled(adapters.map(async (adapter) => ({ adapter: adapter.name, items: await adapter.fetch(), errors: adapter.errors || [] })));
   const errors = results
     .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-    .map((result) => String(result.reason?.message || result.reason));
+    .map((result) => String(result.reason?.message || result.reason))
+    .concat(results.flatMap((result) => (result.status === "fulfilled" ? result.value.errors.map((error) => `${result.value.adapter}: ${error}`) : [])));
   const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value.items : []));
   return { items, errors };
 }

@@ -11,6 +11,16 @@ function keywordScore(query: string, doc: IntelligenceDocument) {
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 0.08 : 0), 0);
 }
 
+function refusal(question: string): ChatAnswer {
+  return {
+    answer: "I could not verify this from available sources.",
+    confidence: 0,
+    evidenceDateRange: "No adequate evidence retrieved",
+    entities: extractEntities(question),
+    citations: []
+  };
+}
+
 export async function retrieveDocuments(query: string, limit = 5) {
   const docs = await listDocuments(100);
   const queryEmbedding = createLocalEmbedding(query);
@@ -34,13 +44,7 @@ function evidenceRange(docs: IntelligenceDocument[]) {
 
 function groundedFallback(query: string, docs: IntelligenceDocument[]): ChatAnswer {
   if (!docs.length) {
-    return {
-      answer: "I could not verify this from available sources.",
-      confidence: 0,
-      evidenceDateRange: "No evidence retrieved",
-      entities: extractEntities(query),
-      citations: []
-    };
+    return refusal(query);
   }
   const bullets = docs.slice(0, 4).map((doc) => `- ${doc.summary} (${doc.sourceName})`).join("\n");
   const allEntities = docs.flatMap((doc) => doc.entities);
@@ -53,13 +57,40 @@ function groundedFallback(query: string, docs: IntelligenceDocument[]): ChatAnsw
   };
 }
 
+function needsLiveCommodityPrice(question: string) {
+  return /\b(current|live|today|now|latest|spot)\b/i.test(question) && /\b(price|rate|quote|lme)\b/i.test(question) && /\b(aluminium|aluminum|metal|commodity|lme)\b/i.test(question);
+}
+
+function asksPrivateOrUndisclosed(question: string) {
+  return /\b(private|undisclosed|confidential|secret|leaked|rumou?r|unannounced)\b/i.test(question);
+}
+
+function meaningfulTerms(question: string) {
+  const stop = new Set(["what", "when", "where", "which", "about", "tell", "give", "show", "from", "with", "that", "this", "have", "does", "could", "would", "latest", "current", "today"]);
+  return (question.toLowerCase().match(/[a-z0-9]+/g) || []).filter((term) => term.length > 2 && !stop.has(term));
+}
+
+function hasAdequateEvidence(question: string, retrieved: Awaited<ReturnType<typeof retrieveDocuments>>) {
+  const topScore = retrieved[0]?.score || 0;
+  if (topScore < 0.18) return false;
+  const terms = meaningfulTerms(question);
+  if (!terms.length) return topScore >= 0.25;
+  const topDocs = retrieved.slice(0, 3).map((item) => `${item.doc.title} ${item.doc.cleanedText} ${item.doc.sourceName}`.toLowerCase()).join(" ");
+  const hits = terms.filter((term) => topDocs.includes(term)).length;
+  return hits / terms.length >= 0.35;
+}
+
 export async function answerQuestion(question: string): Promise<ChatAnswer> {
+  if (asksPrivateOrUndisclosed(question)) return refusal(question);
+  if (needsLiveCommodityPrice(question) && !env.COMMODITY_API_KEY) return refusal(question);
+
   const retrieved = await retrieveDocuments(question, 5);
-  const docs = retrieved.filter((item) => item.score > 0.05).map((item) => item.doc);
-  if (!docs.length) return groundedFallback(question, []);
+  if (!hasAdequateEvidence(question, retrieved)) return refusal(question);
+  const docs = retrieved.filter((item) => item.score > 0.12).map((item) => item.doc);
+  if (!docs.length) return refusal(question);
 
   const evidence = docs
-    .map((doc, index) => `[${index + 1}] ${doc.title}\nSource: ${doc.sourceName}\nURL: ${doc.url}\nDate: ${doc.publishedAt || "unknown"}\nText: ${doc.summary} ${doc.cleanedText.slice(0, 700)}`)
+    .map((doc, index) => `[${index + 1}] ${doc.title}\nSource: ${doc.sourceName}\nURL: ${doc.url}\nDate: ${doc.publishedAt || "unknown"}\nText: ${doc.summary} ${doc.cleanedText.slice(0, 1800)}`)
     .join("\n\n");
 
   if (ollamaConfigured()) {
@@ -68,7 +99,7 @@ export async function answerQuestion(question: string): Promise<ChatAnswer> {
         {
           role: "system",
           content:
-            "You are NALCO Intelligence Bot. Answer only from the supplied evidence. Cite sources as [1], [2]. If evidence is insufficient, say: I could not verify this from available sources. Keep answers concise and executive-ready."
+            "You are NALCO Intelligence Bot. Answer only from the supplied evidence. Cite sources as [1], [2]. If evidence is insufficient or unrelated to the question, say exactly: I could not verify this from available sources. Do not infer private, live price, or current numeric facts unless directly present in evidence. Keep answers concise and executive-ready."
         },
         { role: "user", content: `Question: ${question}\n\nEvidence:\n${evidence}` }
       ]);
@@ -95,7 +126,7 @@ export async function answerQuestion(question: string): Promise<ChatAnswer> {
       {
         role: "system",
         content:
-          "You are NALCO Intelligence Bot. Answer only from the supplied evidence. Cite sources as [1], [2]. If evidence is insufficient, say: I could not verify this from available sources. Keep answers concise and executive-ready."
+          "You are NALCO Intelligence Bot. Answer only from the supplied evidence. Cite sources as [1], [2]. If evidence is insufficient or unrelated to the question, say exactly: I could not verify this from available sources. Do not infer private, live price, or current numeric facts unless directly present in evidence. Keep answers concise and executive-ready."
       },
       { role: "user", content: `Question: ${question}\n\nEvidence:\n${evidence}` }
     ]

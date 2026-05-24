@@ -11,8 +11,8 @@ export interface SourceStatus {
 
 export function getSourceStatuses(): SourceStatus[] {
   return [
-    { name: "NALCO Official Website", status: "configured", live: env.ENABLE_LIVE_INGEST },
-    { name: "NALCO Investor Relations", status: "configured", live: env.ENABLE_LIVE_INGEST },
+    { name: "NALCO Deep Website Crawl", status: "configured", live: env.ENABLE_LIVE_INGEST },
+    { name: "NALCO Investor Relations", status: "included_in_deep_crawl", live: env.ENABLE_LIVE_INGEST },
     { name: "NSE Corporate Filings", status: "linkout", live: false },
     { name: "BSE Corporate Announcements", status: "linkout", live: false },
     { name: "GDELT News", status: env.GDELT_ENABLED ? "configured" : "disabled", live: env.GDELT_ENABLED },

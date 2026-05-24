@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 const ingestRoutes = ["/dashboard", "/entities", "/sources", "/sources/status", "/demo"];
+const heartbeatMs = 60_000;
 
 export function PageLoadIngestion({ enabled }: { enabled: boolean }) {
   const pathname = usePathname();
@@ -11,19 +12,24 @@ export function PageLoadIngestion({ enabled }: { enabled: boolean }) {
 
   useEffect(() => {
     if (!enabled || !pathname || !ingestRoutes.includes(pathname)) return;
-    const key = `nalco-ingested:${pathname}:${Math.round(performance.timeOrigin)}`;
-    if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, "1");
-
     let cancelled = false;
-    fetch("/api/ingest/run?mode=page-load", { method: "POST" })
-      .then(() => {
+
+    async function runHeartbeat() {
+      try {
+        const response = await fetch("/api/ingest/run?mode=page-load", { method: "POST" });
+        if (!response.ok) return;
         if (!cancelled) router.refresh();
-      })
-      .catch(() => undefined);
+      } catch {
+        // Keep the UI usable when a live source is slow or unavailable.
+      }
+    }
+
+    runHeartbeat();
+    const interval = window.setInterval(runHeartbeat, heartbeatMs);
 
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, [enabled, pathname, router]);
 

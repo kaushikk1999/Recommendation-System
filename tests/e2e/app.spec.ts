@@ -1,6 +1,46 @@
 import { expect, test, type Page } from "@playwright/test";
+import { extractNalcoPage } from "@/lib/ingestion/adapters";
 
 const ignoredConsoleFragments = ["Download the React DevTools"];
+
+test("NALCO page extraction captures canonical URL, date and full body", () => {
+  const doc = extractNalcoPage(
+    `
+      <html>
+        <head>
+          <link rel="canonical" href="https://nalcoindia.com/news-room/press-release/example/" />
+          <meta property="article:published_time" content="2026-05-21T10:30:00+05:30" />
+          <title>NALCO announces production milestone | NALCO</title>
+        </head>
+        <body>
+          <article>
+            <h1>NALCO announces production milestone</h1>
+            <p>National Aluminium Company Limited announced a production milestone at its aluminium smelter.</p>
+            <p>The update includes operational context, production performance, Odisha assets, aluminium output and investor-relevant details for market intelligence users.</p>
+          </article>
+        </body>
+      </html>
+    `,
+    "https://nalcoindia.com/news-room/press-release/example/?utm=test"
+  );
+
+  expect(doc.url).toBe("https://nalcoindia.com/news-room/press-release/example/");
+  expect(doc.title).toBe("NALCO announces production milestone");
+  expect(doc.sourceType).toBe("press_release");
+  expect(doc.publishedAt).toBe("2026-05-21T05:00:00.000Z");
+  expect(doc.rawText).toContain("operational context");
+});
+
+test("NALCO extraction handles missing dates without inventing one", () => {
+  const doc = extractNalcoPage(
+    "<html><body><main><h1>Investor Services</h1><p>Shareholder services and investor information for NALCO with enough page body content to be indexed as official evidence.</p></main></body></html>",
+    "https://nalcoindia.com/investor-services/"
+  );
+
+  expect(doc.publishedAt).toBeNull();
+  expect(doc.sourceType).toBe("investor_announcement");
+  expect(doc.rawText).toContain("Shareholder services");
+});
 
 async function monitorPage(page: Page) {
   const consoleErrors: string[] = [];
@@ -57,7 +97,6 @@ test("chatbot opens, answers suggested prompt, and renders citations", async ({ 
   await page.getByRole("button", { name: "Open NALCO assistant" }).click();
   await expect(page.getByText("NALCO Intelligence Assistant", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Aluminium Market" }).click();
-  await expect(page.getByText(/Based on the retrieved sources/i)).toBeVisible();
   await expect(page.getByText(/Confidence/i)).toBeVisible();
   await expect(page.getByRole("link", { name: /\[1\]/ })).toBeVisible();
 
@@ -122,7 +161,7 @@ test("data sources status page shows integrations and run control", async ({ pag
   await expect(page.getByText("Google Sheets", { exact: true })).toBeVisible();
   await expect(page.getByText("Ollama Cloud", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Run ingestion now/i })).toBeVisible();
-  await expect(page.getByText(/NALCO Official Website/i)).toBeVisible();
+  await expect(page.getByText(/NALCO Deep Website Crawl/i)).toBeVisible();
 
   monitor.assertClean();
 });
@@ -155,6 +194,14 @@ test("api routes return expected JSON and validation errors", async ({ request }
   const chat = await request.post("/api/chat", { data: { question: "What aluminium news could affect NALCO?" } });
   expect(chat.ok()).toBeTruthy();
   await expect(await chat.json()).toHaveProperty("citations");
+
+  const privateClaim = await request.post("/api/chat", { data: { question: "Tell me about a private undisclosed NALCO contract with Apple" } });
+  expect(privateClaim.ok()).toBeTruthy();
+  expect((await privateClaim.json()).answer).toBe("I could not verify this from available sources.");
+
+  const livePrice = await request.post("/api/chat", { data: { question: "What is the current live aluminium price today?" } });
+  expect(livePrice.ok()).toBeTruthy();
+  expect((await livePrice.json()).answer).toBe("I could not verify this from available sources.");
 
   const badChat = await request.post("/api/chat", { data: { question: "" } });
   expect(badChat.status()).toBe(400);
