@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Document {
+  id               String   @id @default(cuid())
+  title            String
+  sourceName       String
+  sourceType       String
+  url              String   @unique
+  publishedAt      DateTime?
+  fetchedAt        DateTime @default(now())
+  rawText          String
+  cleanedText      String
+  summary          String
+  entities         Json
+  commodities      String[]
+  geographies      String[]
+  policymakers     String[]
+  eventType        String
+  sentiment        String
+  materialityScore Float
+  embedding        Float[]
+  hashKey          String   @unique
+
+  @@index([sourceType])
+  @@index([eventType])
+  @@index([sentiment])
+  @@index([publishedAt])
+}
+
+model IngestionRun {
+  id              String   @id @default(cuid())
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  status          String
+  documentsFetched Int     @default(0)
+  documentsStored  Int     @default(0)
+  errors          Json?
+}

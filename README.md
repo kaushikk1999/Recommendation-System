@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NALCO Intelligence Bot
 
-## Getting Started
+Production-style market intelligence assistant for National Aluminium Company Limited (NALCO). The app ingests public evidence, extracts entities, classifies events and answers questions with citations.
 
-First, run the development server:
+## Features
+
+- Floating chatbot widget with suggested prompts, confidence, evidence date range and source citations.
+- Intelligence dashboard with latest documents, sentiment, high-impact events, market signals and policy mentions.
+- Modular ingestion adapters for NALCO official pages, investor pages, GDELT, NewsAPI, commodity context and government policy monitoring.
+- Hybrid NLP layer using NALCO-specific dictionaries, event classification, sentiment scoring and materiality scoring.
+- Citation-first RAG pipeline with local vector-style retrieval and optional OpenAI answer generation.
+- PostgreSQL Prisma schema, deployable on Vercel with Neon/Supabase.
+
+## Quick Start
+
+```bash
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+The app runs in demo fallback mode without API keys or a database. Configure `DATABASE_URL` for persistence and `OPENAI_API_KEY` for LLM-generated grounded answers.
+
+## Commands
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build
+npm run lint
+npm run test
+npm run typecheck
+npm run prisma:generate
+npm run prisma:migrate
+npm run prisma:seed
+npm run ingest
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Evidence Discipline
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The bot never presents fallback commodity data as live price data. If evidence is missing, it responds: `I could not verify this from available sources.`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Key Routes
 
-## Learn More
+- `/` landing page
+- `/dashboard` intelligence dashboard
+- `/sources` source library
+- `/sources/[id]` evidence detail
+- `/entities` entity explorer
+- `/search` retrieval search
+- `/demo` recruiter demo mode
 
-To learn more about Next.js, take a look at the following resources:
+## API Routes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `GET /api/health`
+- `POST /api/ingest/run`
+- `GET /api/documents`
+- `GET /api/documents/:id`
+- `GET /api/entities`
+- `GET /api/analytics/overview`
+- `POST /api/chat`
+- `GET /api/sources/status`
+- `GET /api/search?q=`
