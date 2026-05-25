@@ -86,18 +86,31 @@ export function cleanTitle(title: string) {
     .trim();
 }
 
+export function overrideHistoricalDate(title: string, currentPublishedAt: string | null): string | null {
+  const match = title.match(/\b(19\d{2}|20[0-2]\d)\b/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    if (year >= 1980 && year <= 2023) {
+      return `${year}-07-01T00:00:00.000Z`;
+    }
+  }
+  return currentPublishedAt;
+}
+
 export function normalizeDocument(item: RawSourceItem): IntelligenceDocument {
   const title = cleanTitle(item.title);
   const cleanedText = cleanText(item.rawText || item.title);
   const entities = extractEntities(`${title}. ${cleanedText}`);
   const eventType = classifyEventType(`${title}. ${cleanedText}`);
   const sentiment = classifySentiment(`${title}. ${cleanedText}`);
+  const rawPublishedAt = item.publishedAt || null;
+  const publishedAt = overrideHistoricalDate(title, rawPublishedAt);
   return {
     ...item,
     title,
     id: hashDocument(item).slice(0, 16),
     fetchedAt: new Date().toISOString(),
-    publishedAt: item.publishedAt || null,
+    publishedAt,
     cleanedText,
     summary: summarize(cleanedText),
     entities,
