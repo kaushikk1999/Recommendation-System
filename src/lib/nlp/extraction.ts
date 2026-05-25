@@ -79,13 +79,22 @@ export function createLocalEmbedding(text: string, dimensions = 64) {
   return vector.map((value) => Number((value / norm).toFixed(6)));
 }
 
+export function cleanTitle(title: string) {
+  return cleanText(title)
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function normalizeDocument(item: RawSourceItem): IntelligenceDocument {
+  const title = cleanTitle(item.title);
   const cleanedText = cleanText(item.rawText || item.title);
-  const entities = extractEntities(`${item.title}. ${cleanedText}`);
-  const eventType = classifyEventType(`${item.title}. ${cleanedText}`);
-  const sentiment = classifySentiment(`${item.title}. ${cleanedText}`);
+  const entities = extractEntities(`${title}. ${cleanedText}`);
+  const eventType = classifyEventType(`${title}. ${cleanedText}`);
+  const sentiment = classifySentiment(`${title}. ${cleanedText}`);
   return {
     ...item,
+    title,
     id: hashDocument(item).slice(0, 16),
     fetchedAt: new Date().toISOString(),
     publishedAt: item.publishedAt || null,
@@ -98,7 +107,7 @@ export function normalizeDocument(item: RawSourceItem): IntelligenceDocument {
     eventType,
     sentiment,
     materialityScore: assignMaterialityScore(cleanedText, eventType, entities),
-    embedding: createLocalEmbedding(`${item.title} ${cleanedText}`),
+    embedding: createLocalEmbedding(`${title} ${cleanedText}`),
     hashKey: hashDocument(item)
   };
 }

@@ -106,7 +106,11 @@ function keywordScore(query: string, doc: IntelligenceDocument) {
 }
 
 function isLatestNewsIntent(query: string) {
-  return /latest nalco news|nalco news|latest announcements?|recent announcements?|recent updates?|latest updates?|what changed.*nalco|nalco.*changed|changed in nalco|new with nalco|recently.*nalco|nalco.*recently/i.test(query);
+  const normalized = query.toLowerCase();
+  return (
+    /news|announcements?|updates?|what changed|recently|what is new/i.test(normalized) &&
+    /nalco|nationalum/i.test(normalized)
+  );
 }
 
 function isEntityMapIntent(query: string) {
@@ -125,17 +129,25 @@ function isPdfMetadataOnly(doc: IntelligenceDocument) {
   return /\.pdf(?:$|[?#])/i.test(doc.url) && /^PDF metadata indexed only/i.test(`${doc.summary} ${doc.cleanedText}`);
 }
 
+function isFilingIntent(question: string) {
+  return /recent filings?|filings?|financial results?|investor|quarterly results?|annual reports?|dividends?|board recommends?|board actions?/i.test(question);
+}
+
+function isFilingEvidence(doc: IntelligenceDocument) {
+  return ["financial_result", "investor_announcement", "exchange_filing", "annual_report"].includes(doc.sourceType);
+}
+
 function intentBoost(query: string, doc: IntelligenceDocument) {
   const normalized = query.toLowerCase();
   let boost = 0;
   if (isLatestNewsIntent(normalized)) {
-    if (["news", "press_release"].includes(doc.sourceType)) boost += 0.25;
+    if (["news", "press_release", "exchange_filing", "investor_announcement", "financial_result"].includes(doc.sourceType)) boost += 0.25;
     if (/gdelt|news|press|media/i.test(doc.sourceName)) boost += 0.12;
     if (!isPdfMetadataOnly(doc)) boost += 0.22;
     if (isPdfMetadataOnly(doc)) boost -= 0.55;
     if (doc.sourceType === "commodity") boost -= 0.15;
   }
-  if (/recent filings?|filings?|financial results?|investor/.test(normalized) && ["financial_result", "investor_announcement", "exchange_filing", "annual_report"].includes(doc.sourceType)) {
+  if (isFilingIntent(normalized) && isFilingEvidence(doc)) {
     boost += 0.3;
   }
   if (isRiskSummaryIntent(normalized)) {
@@ -159,12 +171,13 @@ function intentBoost(query: string, doc: IntelligenceDocument) {
   return boost;
 }
 
-function isFilingIntent(question: string) {
-  return /recent filings?|filings?|financial results?|investor|quarterly results?|annual reports?|dividends?|board recommends?|board actions?/i.test(question);
-}
-
-function isFilingEvidence(doc: IntelligenceDocument) {
-  return ["financial_result", "investor_announcement", "exchange_filing", "annual_report"].includes(doc.sourceType);
+function getRecencyBoost(doc: IntelligenceDocument) {
+  if (!doc.publishedAt) return 0;
+  const time = new Date(doc.publishedAt).getTime();
+  if (Number.isNaN(time)) return 0;
+  const ageInYears = (Date.now() - time) / (1000 * 60 * 60 * 24 * 365.25);
+  if (ageInYears < 0) return 0.25;
+  return Math.max(0, 0.25 * (1 - ageInYears / 10)); // gradually decay over 10 years
 }
 
 function refusal(liveRefresh?: LiveRefreshMetadata): ChatAnswer {
@@ -187,7 +200,14 @@ export async function retrieveDocuments(query: string, limit = 5) {
   const queryEmbedding = createLocalEmbedding(query);
   return docs
     .filter(isUsableEvidence)
-    .map((doc) => ({ doc, score: cosineSimilarity(queryEmbedding, doc.embedding) + keywordScore(query, doc) + intentBoost(query, doc) }))
+    .map((doc) => ({
+      doc,
+      score:
+        cosineSimilarity(queryEmbedding, doc.embedding) +
+        keywordScore(query, doc) +
+        intentBoost(query, doc) +
+        getRecencyBoost(doc)
+    }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
@@ -219,7 +239,7 @@ async function retrieveRiskSummaryDocuments(limit = 5) {
       const sourceScore = ["policy", "commodity", "press_release", "investor_announcement", "financial_result", "exchange_filing", "news"].includes(doc.sourceType) ? 0.24 : 0;
       const qualityScore = isPdfMetadataOnly(doc) ? -0.45 : 0.34;
       const entityScore = Math.min(0.18, doc.entities.length * 0.04);
-      return { doc, score: sourceScore + qualityScore + Math.min(0.34, riskHits * 0.06) + entityScore + doc.materialityScore * 0.16 };
+      return { doc, score: sourceScore + qualityScore + Math.min(0.34, riskHits * 0.06) + entityScore + doc.materialityScore * 0.16 + getRecencyBoost(doc) };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
@@ -235,7 +255,7 @@ async function retrieveAluminiumMarketDocuments(limit = 5) {
       const sourceScore = ["commodity", "policy", "news", "press_release", "financial_result", "investor_announcement"].includes(doc.sourceType) ? 0.28 : 0;
       const qualityScore = isPdfMetadataOnly(doc) ? -0.45 : 0.34;
       const recencyScore = doc.publishedAt ? 0.08 : 0;
-      return { doc, score: sourceScore + qualityScore + Math.min(0.38, marketHits * 0.055) + recencyScore + doc.materialityScore * 0.14 };
+      return { doc, score: sourceScore + qualityScore + Math.min(0.38, marketHits * 0.055) + recencyScore + doc.materialityScore * 0.14 + getRecencyBoost(doc) };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);

@@ -3,9 +3,9 @@ import type { IntelligenceDocument, RawSourceItem } from "@/lib/types";
 const utilityTitlePattern = /^(help|privacy policy|legal disclaimer|query\/appeal online|vigilance|vigilance complaints|complaints handling process|intensive examinations|nalco vigilance administration|best initiatives & practices)$/i;
 const utilityUrlPattern = /\/(?:help|home\/(?:privacy-policy|legal-disclaimer)|vigilance(?:\/|$)|query-appeal|query\/appeal)/i;
 const lowValueDocumentPattern =
-  /\b(?:rti|right to information|code of conduct|sd policy|vigilance manual|vigilance handbook|nit|gem bidding|technical bid|necessary forms|tender|eprocurement|published nit|integrity pact format|trading\s*window|LetterTradingWindow)\b/i;
+  /\b(?:rti|right to information|code of conduct|sd policy|vigilance manual|vigilance handbook|nit|gem bidding|technical bid|necessary forms|tender|eprocurement|published nit|integrity pact format|trading\s*window|LetterTradingWindow|seletterpresentation|recorddate|social\s*impact\s*assessment)\b/i;
 const proceduralNoticePattern =
-  /\b(?:unclaimed (?:final )?dividend|transfer of (?:equity )?shares to (?:IEPF|investor education)|closure of register of members|newspaper publication regarding|unpaid.*dividend pertaining)\b/i;
+  /\b(?:unclaimed\s*(?:final\s*)?dividend|transfer\s*of\s*(?:equity\s*)?shares|closure\s*of\s*register|newspaper\s*publication|unpaid.*dividend|record\s*date|notice\s*to\s*shareholders?|board\s*meeting\s*notice|register\s*your\s*email|email\s*id\s*against\s*your\s*demat|gate\s*2020\s*results?|recruitment\s*of\s*graduate\s*engineers)\b/i;
 const rtiSectionPattern = /^\s*\((?:i{1,3}|iv|v|vi{0,3}|ix|x{1,3}|xv|xvi{0,3})\)\s+(?:The |A )/i;
 const adminPagePattern = /\b(?:powers and duties of its officers|particulars of facilities available to citizens|boards,?\s*councils,?\s*committees|statement of the boards)\b/i;
 const redirectTextPattern = /^×?\s*Alert\s+You are being redirected to the external website/i;
