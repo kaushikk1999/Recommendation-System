@@ -225,6 +225,9 @@ export function ChatWidget() {
                     className={`nalco-chat-fade flex max-w-[88%] flex-col gap-2 ${isUser ? "ml-auto items-end" : "mr-auto items-start"}`}
                     style={{ animationDelay: `${Math.min(index * 80, 360)}ms` }}
                   >
+                    <span className={`text-[10px] uppercase tracking-tight text-slate-500 ${isUser ? "mr-1" : "ml-1"}`}>
+                      {isUser ? "You" : "AI Assistant"} • Just now
+                    </span>
                     <div
                       className={
                         isUser
@@ -297,9 +300,6 @@ export function ChatWidget() {
                         </div>
                       )}
                     </div>
-                    <span className="ml-1 text-[10px] uppercase tracking-tight text-slate-500">
-                      {isUser ? "You" : "AI Assistant"} • Just now
-                    </span>
                   </div>
                 );
               })}
