@@ -33,6 +33,8 @@ type PreparedAnswer = {
 const globalForChatRefresh = globalThis as unknown as {
   nalcoChatRefresh?: {
     running?: Promise<LiveRefreshMetadata>;
+    lastResult?: LiveRefreshMetadata;
+    lastRunTime?: number;
   };
 };
 
@@ -83,10 +85,20 @@ async function performLiveRefresh(): Promise<LiveRefreshMetadata> {
 }
 
 export async function refreshEvidenceForChat(): Promise<LiveRefreshMetadata> {
+  const now = Date.now();
+  if (chatRefreshState.lastResult && chatRefreshState.lastRunTime && now - chatRefreshState.lastRunTime < 300_000) {
+    return chatRefreshState.lastResult;
+  }
   if (!chatRefreshState.running) {
-    chatRefreshState.running = performLiveRefresh().finally(() => {
-      chatRefreshState.running = undefined;
-    });
+    chatRefreshState.running = performLiveRefresh()
+      .then((result) => {
+        chatRefreshState.lastResult = result;
+        chatRefreshState.lastRunTime = Date.now();
+        return result;
+      })
+      .finally(() => {
+        chatRefreshState.running = undefined;
+      });
   }
   return chatRefreshState.running;
 }
@@ -148,7 +160,7 @@ function intentBoost(query: string, doc: IntelligenceDocument) {
     if (doc.sourceType === "commodity") boost -= 0.15;
   }
   if (isFilingIntent(normalized) && isFilingEvidence(doc)) {
-    boost += 0.3;
+    boost += 0.5;
   }
   if (isRiskSummaryIntent(normalized)) {
     if (["policy", "commodity", "news", "press_release"].includes(doc.sourceType)) boost += 0.18;
@@ -317,7 +329,7 @@ function answerMessages(question: string, evidence: string) {
     {
       role: "system" as const,
       content:
-        "You are NALCO Intelligence Bot. Produce a polished, executive-ready answer only from the supplied latest evidence. Adapt the structure to the user's question: lead with the most material update, group related points, mention source dates when useful, and cite every factual claim as [1], [2]. Go beyond restating facts — explain the significance, causal relationships, and business implications (e.g. how input costs affect margins, why a policy matters for operations). If evidence is insufficient or unrelated to the question, say exactly: I could not verify this from available sources. Do not infer private, live price, or current numeric facts unless directly present in evidence."
+        "You are NALCO Intelligence Bot. Produce a polished, executive-ready answer only from the supplied latest evidence. Note that NATIONALUM is the stock exchange symbol (ticker) for NALCO and refers to the same company. Adapt the structure to the user's question: lead with the most material update, group related points, mention source dates when useful, and cite every factual claim as [1], [2]. Go beyond restating facts — explain the significance, causal relationships, and business implications (e.g. how input costs affect margins, why a policy matters for operations). If evidence is insufficient or unrelated to the question, say exactly: I could not verify this from available sources. Do not infer private, live price, or current numeric facts unless directly present in evidence."
     },
     { role: "user" as const, content: `Question: ${question}\n\nEvidence:\n${evidence}` }
   ];
