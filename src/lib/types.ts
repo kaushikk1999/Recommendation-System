@@ -51,6 +51,27 @@ export interface IngestionRunRecord {
   stored: number;
   status: string;
   errors: string[];
+  nalcoStatus?: string;
+  gdeltStatus?: string;
+  newsApiStatus?: string;
+  failedUrls?: string[];
+  retriedUrls?: string[];
+  successfulNalcoPages?: number;
+}
+
+export interface SourceFetchStatus {
+  name: string;
+  status: "ok" | "warning" | "failed" | "skipped";
+  critical: boolean;
+  fetched: number;
+  errors: string[];
+}
+
+export interface SourceFetchMetadata {
+  sourceStatuses: SourceFetchStatus[];
+  failedUrls: string[];
+  retriedUrls: string[];
+  successfulNalcoPages: number;
 }
 
 export interface IntelligenceDocument extends RawSourceItem {
@@ -83,4 +104,14 @@ export interface ChatAnswer {
   evidenceDateRange: string;
   entities: ExtractedEntity[];
   citations: ChatCitation[];
+  liveRefreshStatus?: "completed" | "completed_with_warnings" | "failed";
+  liveFetchedAt?: string;
+  liveFetchedCount?: number;
+  liveRefreshErrors?: string[];
+  nalcoStatus?: string;
+  gdeltStatus?: string;
+  newsApiStatus?: string;
+  failedUrls?: string[];
+  retriedUrls?: string[];
+  successfulNalcoPages?: number;
 }

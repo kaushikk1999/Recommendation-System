@@ -1,19 +1,22 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = process.env.PLAYWRIGHT_PORT || "3000";
+const baseURL = `http://localhost:${port}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 30_000,
-  expect: { timeout: 10_000 },
+  timeout: 120_000,
+  expect: { timeout: 15_000 },
   fullyParallel: true,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure"
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:3000/api/health",
+    command: `NALCO_MOCK_LIVE_SOURCES=true npx next dev -p ${port}`,
+    url: `${baseURL}/api/health`,
     reuseExistingServer: true,
     timeout: 60_000
   },

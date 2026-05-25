@@ -1,18 +1,45 @@
-import { getAdapters } from "@/lib/ingestion/adapters";
+import { getAdapters, sourceStatus } from "@/lib/ingestion/adapters";
 import { appendIngestionRun, sheetsConfigured } from "@/lib/google-sheets";
 import { normalizeDocument } from "@/lib/nlp/extraction";
 import { upsertDocuments } from "@/lib/store";
-import type { IntelligenceDocument, RawSourceItem } from "@/lib/types";
+import type { IntelligenceDocument, RawSourceItem, SourceFetchMetadata, SourceFetchStatus } from "@/lib/types";
+
+function emptyMetadata(): SourceFetchMetadata {
+  return { sourceStatuses: [], failedUrls: [], retriedUrls: [], successfulNalcoPages: 0 };
+}
+
+function mergeUnique(...lists: Array<string[] | undefined>) {
+  return [...new Set(lists.flatMap((list) => list || []))];
+}
+
+function sourceState(sourceStatuses: SourceFetchStatus[], name: string) {
+  return sourceStatuses.find((source) => source.name === name)?.status;
+}
 
 export async function fetchSources() {
   const adapters = getAdapters();
-  const results = await Promise.allSettled(adapters.map(async (adapter) => ({ adapter: adapter.name, items: await adapter.fetch(), errors: adapter.errors || [] })));
-  const errors = results
-    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-    .map((result) => String(result.reason?.message || result.reason))
-    .concat(results.flatMap((result) => (result.status === "fulfilled" ? result.value.errors.map((error) => `${result.value.adapter}: ${error}`) : [])));
-  const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value.items : []));
-  return { items, errors };
+  const results = await Promise.all(
+    adapters.map(async (adapter) => {
+      try {
+        const items = await adapter.fetch();
+        return { adapter, items, errors: adapter.errors || [] };
+      } catch (error) {
+        return { adapter, items: [] as RawSourceItem[], errors: [error instanceof Error ? error.message : String(error)] };
+      }
+    })
+  );
+  const errors = results.flatMap((result) => result.errors.map((error) => `${result.adapter.name}: ${error}`));
+  const items = results.flatMap((result) => result.items);
+  const metadata = results.reduce<SourceFetchMetadata>((current, result) => {
+    const adapterMetadata = result.adapter.metadata || {};
+    return {
+      sourceStatuses: [...current.sourceStatuses, sourceStatus({ ...result.adapter, errors: result.errors }, result.items.length)],
+      failedUrls: mergeUnique(current.failedUrls, adapterMetadata.failedUrls),
+      retriedUrls: mergeUnique(current.retriedUrls, adapterMetadata.retriedUrls),
+      successfulNalcoPages: current.successfulNalcoPages + (adapterMetadata.successfulNalcoPages || 0)
+    };
+  }, emptyMetadata());
+  return { items, errors, metadata };
 }
 
 export function deduplicateDocuments(items: RawSourceItem[]) {
@@ -26,14 +53,21 @@ export function deduplicateDocuments(items: RawSourceItem[]) {
 }
 
 export async function runIngestion() {
-  const { items, errors } = await fetchSources();
+  const { items, errors, metadata } = await fetchSources();
   const normalized: IntelligenceDocument[] = deduplicateDocuments(items).map(normalizeDocument);
   await upsertDocuments(normalized);
   const result = {
     status: errors.length ? "completed_with_warnings" : "completed",
     fetched: items.length,
     stored: normalized.length,
-    errors
+    errors,
+    sourceStatuses: metadata.sourceStatuses,
+    nalcoStatus: sourceState(metadata.sourceStatuses, "NALCO Deep Website Crawl") || sourceState(metadata.sourceStatuses, "Mock Live NALCO Sources") || "skipped",
+    gdeltStatus: sourceState(metadata.sourceStatuses, "GDELT News") || "skipped",
+    newsApiStatus: sourceState(metadata.sourceStatuses, "NewsAPI") || "skipped",
+    failedUrls: metadata.failedUrls,
+    retriedUrls: metadata.retriedUrls,
+    successfulNalcoPages: metadata.successfulNalcoPages
   };
   if (sheetsConfigured()) {
     await appendIngestionRun({

@@ -1,11 +1,14 @@
 import * as cheerio from "cheerio";
 import { env } from "@/lib/env";
+import { isUsableEvidence, validEvidenceDate } from "@/lib/evidence-quality";
 import { getSheetSourceConfigs, sheetsConfigured } from "@/lib/google-sheets";
-import type { RawSourceItem, SourceType } from "@/lib/types";
+import type { RawSourceItem, SourceFetchMetadata, SourceFetchStatus, SourceType } from "@/lib/types";
 
 export interface SourceAdapter {
   name: string;
   errors?: string[];
+  critical?: boolean;
+  metadata?: Partial<SourceFetchMetadata>;
   fetch(): Promise<RawSourceItem[]>;
 }
 
@@ -37,6 +40,66 @@ const nalcoRoots = [
   "https://nalcoindia.com/company/our-growth-story/production-financial-highlights/"
 ];
 
+const transientStatuses = new Set([429, 500, 502, 503, 504]);
+const maxFetchAttempts = 3;
+
+function emptyMetadata(): SourceFetchMetadata {
+  return { sourceStatuses: [], failedUrls: [], retriedUrls: [], successfulNalcoPages: 0 };
+}
+
+export function sourceStatus(adapter: SourceAdapter, fetched: number): SourceFetchStatus {
+  if (adapter.name === "NewsAPI" && !env.NEWS_API_KEY) return { name: adapter.name, status: "skipped", critical: Boolean(adapter.critical), fetched: 0, errors: [] };
+  if (adapter.name === "GDELT News" && !env.GDELT_ENABLED) return { name: adapter.name, status: "skipped", critical: Boolean(adapter.critical), fetched: 0, errors: [] };
+  const errors = adapter.errors || [];
+  return {
+    name: adapter.name,
+    status: errors.length ? (fetched > 0 ? "warning" : "failed") : "ok",
+    critical: Boolean(adapter.critical),
+    fetched,
+    errors
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMs(response: Response) {
+  const retryAfter = response.headers.get("retry-after");
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = new Date(retryAfter).getTime();
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
+function isTransientError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /abort|timeout|fetch failed|network|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(message);
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, retriedUrls?: string[]) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxFetchAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.INGEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+      if (response.ok || !transientStatuses.has(response.status) || attempt === maxFetchAttempts - 1) return response;
+      if (!retriedUrls?.includes(url)) retriedUrls?.push(url);
+      await sleep(retryAfterMs(response) ?? 500 * 2 ** attempt + Math.floor(Math.random() * 250));
+    } catch (error) {
+      lastError = error;
+      if (!isTransientError(error) || attempt === maxFetchAttempts - 1) throw error;
+      if (!retriedUrls?.includes(url)) retriedUrls?.push(url);
+      await sleep(500 * 2 ** attempt + Math.floor(Math.random() * 250));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "Fetch failed"));
+}
+
 function cleanText(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -55,8 +118,14 @@ function normalizeSourceDate(value?: string | null) {
     return `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
   }
   const cleaned = value.replace(/(\d+)(st|nd|rd|th)/gi, "$1").replace(/\s+/g, " ").trim();
+  const dmy = cleaned.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (dmy) {
+    const [, day, month, year] = dmy;
+    const date = new Date(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T00:00:00.000Z`);
+    if (!Number.isNaN(date.getTime())) return validEvidenceDate(date.toISOString());
+  }
   const date = new Date(cleaned);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  return Number.isNaN(date.getTime()) ? null : validEvidenceDate(date.toISOString());
 }
 
 function inferDateFromText(text: string) {
@@ -77,26 +146,26 @@ function inferDateFromText(text: string) {
 function inferDateFromUrl(url: string) {
   const match = url.match(/\/(20\d{2})\/(\d{2})\//) || url.match(/(20\d{2})[-_](\d{2})[-_](\d{2})/);
   if (!match) return null;
-  if (match.length === 3) return normalizeSourceDate(`${match[1]}-${match[2]}-01`);
+  if (match.length === 3) return validEvidenceDate(normalizeSourceDate(`${match[1]}-${match[2]}-01`));
   return normalizeSourceDate(`${match[1]}-${match[2]}-${match[3]}`);
 }
 
-async function fetchHtml(url: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), env.INGEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      headers: { "user-agent": env.SCRAPER_USER_AGENT },
-      signal: controller.signal,
-      cache: "no-store"
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("text/html")) throw new Error(`Unsupported content type ${contentType || "unknown"}`);
-    return await response.text();
-  } finally {
-    clearTimeout(timeout);
-  }
+async function fetchText(url: string, retriedUrls?: string[]) {
+  const response = await fetchWithRetry(
+    url,
+    {
+      headers: { "user-agent": env.SCRAPER_USER_AGENT }
+    },
+    retriedUrls
+  );
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return { text: await response.text(), contentType: response.headers.get("content-type") || "" };
+}
+
+async function fetchHtml(url: string, retriedUrls?: string[]) {
+  const { text, contentType } = await fetchText(url, retriedUrls);
+  if (!contentType.includes("text/html")) throw new Error(`Unsupported content type ${contentType || "unknown"}`);
+  return text;
 }
 
 function canonicalUrl($: cheerio.CheerioAPI, fallbackUrl: string) {
@@ -187,7 +256,7 @@ export function extractNalcoPage(html: string, pageUrl: string, sourceName = "NA
     sourceName,
     sourceType: classifyNalcoSource(url, `${title} ${rawText}`),
     url,
-    publishedAt: extractPublishedAt($, url, rawText),
+    publishedAt: validEvidenceDate(extractPublishedAt($, url, rawText)),
     rawText: rawText.slice(0, 16000) || title
   };
 }
@@ -211,14 +280,15 @@ function extractLinks(html: string, baseUrl: string) {
 
 function pdfItem(link: { url: string; text: string }, sourceName: string): RawSourceItem | null {
   const fileName = decodeURIComponent(link.url.split("/").pop()?.replace(/\.pdf(?:[?#].*)?$/i, "") || "");
-  const title = cleanText(link.text || fileName.replace(/[-_]+/g, " "));
+  const linkText = /^Size:\s*[\d.]+\s*(?:KB|MB),\s*Format:\s*PDF,\s*Language:/i.test(link.text) ? "" : link.text;
+  const title = cleanText(linkText || fileName.replace(/[-_]+/g, " "));
   if (!title || title.length < 4) return null;
   return {
     title: title.slice(0, 220),
     sourceName,
     sourceType: classifyNalcoSource(link.url, title),
     url: link.url,
-    publishedAt: inferDateFromUrl(link.url) || inferDateFromText(title),
+    publishedAt: validEvidenceDate(inferDateFromText(title) || inferDateFromUrl(link.url)),
     rawText: `PDF metadata indexed only. Title: ${title}. URL: ${link.url}`
   };
 }
@@ -237,9 +307,34 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper:
   return results;
 }
 
+function sitemapUrls(xml: string) {
+  const $ = cheerio.load(xml, { xmlMode: true });
+  return $("loc")
+    .map((_, element) => cleanText($(element).text()))
+    .get()
+    .filter((url) => shouldCrawlHtml(url));
+}
+
+async function discoverNalcoSitemapUrls(metadata: SourceFetchMetadata) {
+  const sitemapCandidates = ["https://nalcoindia.com/sitemap.xml", "https://nalcoindia.com/wp-sitemap.xml"];
+  const urls = new Set<string>();
+  for (const sitemapUrl of sitemapCandidates) {
+    try {
+      const { text } = await fetchText(sitemapUrl, metadata.retriedUrls);
+      for (const url of sitemapUrls(text)) urls.add(stripHash(url));
+    } catch {
+      metadata.failedUrls.push(sitemapUrl);
+      // Sitemap discovery is opportunistic; root crawling still covers the core site.
+    }
+  }
+  return [...urls];
+}
+
 export async function crawlNalcoSite() {
   const sourceName = "NALCO Official Website";
-  const queue = nalcoRoots.map(stripHash);
+  const metadata = emptyMetadata();
+  const discoveredUrls = await discoverNalcoSitemapUrls(metadata);
+  const queue = [...nalcoRoots.map(stripHash), ...discoveredUrls].slice(0, env.NALCO_CRAWL_MAX_PAGES);
   const queued = new Set(queue);
   const visited = new Set<string>();
   const items = new Map<string, RawSourceItem>();
@@ -250,13 +345,16 @@ export async function crawlNalcoSite() {
     await mapWithConcurrency(batch, env.NALCO_CRAWL_CONCURRENCY, async (url) => {
       visited.add(url);
       try {
-        const html = await fetchHtml(url);
+        const html = await fetchHtml(url, metadata.retriedUrls);
         const item = extractNalcoPage(html, url, sourceName);
-        if (item.rawText.length >= 80) items.set(item.url, item);
+        if (item.rawText.length >= 80 && isUsableEvidence(item)) {
+          items.set(item.url, item);
+          metadata.successfulNalcoPages += 1;
+        }
         for (const link of extractLinks(html, url)) {
           if (isPdfUrl(link.url)) {
             const pdf = pdfItem(link, sourceName);
-            if (pdf) items.set(pdf.url, pdf);
+            if (pdf && isUsableEvidence(pdf)) items.set(pdf.url, pdf);
             continue;
           }
           if (shouldCrawlHtml(link.url) && !queued.has(link.url) && visited.size + queue.length < env.NALCO_CRAWL_MAX_PAGES) {
@@ -265,12 +363,14 @@ export async function crawlNalcoSite() {
           }
         }
       } catch (error) {
-        errors.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `${url}: ${error instanceof Error ? error.message : String(error)}`;
+        errors.push(message);
+        metadata.failedUrls.push(url);
       }
     });
   }
 
-  return { items: [...items.values()], errors };
+  return { items: [...items.values()], errors, metadata };
 }
 
 function configuredItems(html: string, baseUrl: string, sourceName: string, sourceType: RawSourceItem["sourceType"], selector?: string | null) {
@@ -313,23 +413,27 @@ export class ConfiguredHtmlAdapter implements SourceAdapter {
 
 export class NalcoDeepCrawlerAdapter implements SourceAdapter {
   name = "NALCO Deep Website Crawl";
+  critical = true;
   errors: string[] = [];
+  metadata: Partial<SourceFetchMetadata> = {};
 
   async fetch() {
     const result = await crawlNalcoSite();
     this.errors = result.errors;
+    this.metadata = result.metadata;
     return result.items;
   }
 }
 
 export class GdeltNewsAdapter implements SourceAdapter {
   name = "GDELT News";
+  critical = false;
   async fetch(): Promise<RawSourceItem[]> {
     if (!env.GDELT_ENABLED) return [];
     const query = encodeURIComponent('(NALCO OR "National Aluminium Company" OR NATIONALUM) aluminium India');
     const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${query}&mode=ArtList&format=json&maxrecords=20&sort=HybridRel`;
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`GDELT failed: ${response.status}`);
+    const response = await fetchWithRetry(url, {});
+    if (!response.ok) throw new Error(response.status === 429 ? "External news feed was temporarily rate-limited." : `External news feed failed: ${response.status}`);
     const data = await response.json();
     return ((data.articles || []) as GdeltArticle[]).filter((article) => article.title && article.url).map((article) => ({
       title: article.title || "Untitled GDELT article",
@@ -344,11 +448,12 @@ export class GdeltNewsAdapter implements SourceAdapter {
 
 export class NewsApiAdapter implements SourceAdapter {
   name = "NewsAPI";
+  critical = false;
   async fetch(): Promise<RawSourceItem[]> {
     if (!env.NEWS_API_KEY) return [];
     const query = encodeURIComponent('NALCO OR "National Aluminium Company" OR aluminium India');
     const url = `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=20&apiKey=${env.NEWS_API_KEY}`;
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetchWithRetry(url, {});
     if (!response.ok) throw new Error(`NewsAPI failed: ${response.status}`);
     const data = await response.json();
     return ((data.articles || []) as NewsApiArticle[]).filter((article) => article.title && article.url).map((article) => ({
@@ -364,6 +469,7 @@ export class NewsApiAdapter implements SourceAdapter {
 
 export class CommodityAdapter implements SourceAdapter {
   name = "Commodity Market Adapter";
+  critical = false;
   async fetch(): Promise<RawSourceItem[]> {
     return [
       {
@@ -381,6 +487,7 @@ export class CommodityAdapter implements SourceAdapter {
 
 export class PolicyAdapter implements SourceAdapter {
   name = "Government Policy Watch";
+  critical = false;
   async fetch(): Promise<RawSourceItem[]> {
     return [
       {
@@ -396,6 +503,36 @@ export class PolicyAdapter implements SourceAdapter {
   }
 }
 
+export class MockLiveSourcesAdapter implements SourceAdapter {
+  name = "Mock Live NALCO Sources";
+  critical = true;
+  metadata: Partial<SourceFetchMetadata> = { successfulNalcoPages: 2 };
+  async fetch(): Promise<RawSourceItem[]> {
+    const now = new Date().toISOString();
+    return [
+      {
+        title: "Live NALCO press update: production and operations review",
+        sourceName: "NALCO Official Website",
+        sourceType: "press_release",
+        url: "https://nalcoindia.com/news-room/press-release/live-operations-review/",
+        publishedAt: now,
+        rawText:
+          "National Aluminium Company Limited published a live operations review covering aluminium, alumina, bauxite, Damanjodi and Angul assets. The update highlights production stability, operational readiness, Odisha assets, and market-relevant operating factors for NALCO."
+      },
+      {
+        title: "Live NALCO investor filing: board and financial update",
+        sourceName: "NALCO Investor Relations",
+        sourceType: "financial_result",
+        url: "https://nalcoindia.com/investor-services/financial-results/live-board-update/",
+        publishedAt: now,
+        rawText:
+          "NALCO investor relations published a live filing covering board actions, financial results, dividend context, shareholder communication, SEBI compliance, and exchange-relevant investor disclosures for National Aluminium Company Limited."
+      }
+    ];
+  }
+}
+
 export function getAdapters(): SourceAdapter[] {
+  if (env.NALCO_MOCK_LIVE_SOURCES) return [new MockLiveSourcesAdapter(), new CommodityAdapter(), new PolicyAdapter()];
   return [new ConfiguredHtmlAdapter(), new NalcoDeepCrawlerAdapter(), new GdeltNewsAdapter(), new NewsApiAdapter(), new CommodityAdapter(), new PolicyAdapter()];
 }

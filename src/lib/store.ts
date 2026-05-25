@@ -1,9 +1,14 @@
 import { demoDocuments } from "@/lib/demo-data";
+import { isUsableEvidence, sanitizeDocumentDates } from "@/lib/evidence-quality";
 import { getSheetDocuments, sheetsConfigured, upsertSheetDocuments } from "@/lib/google-sheets";
 import type { IntelligenceDocument, Sentiment, SourceType } from "@/lib/types";
 import type { Prisma, Document as PrismaDocument } from "@prisma/client";
 
 const memoryDocuments: IntelligenceDocument[] = [...demoDocuments];
+
+function cleanDocuments(docs: IntelligenceDocument[], limit: number) {
+  return docs.filter(isUsableEvidence).map(sanitizeDocumentDates).slice(0, limit);
+}
 
 function dbEnabled() {
   return Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.startsWith("file:"));
@@ -44,7 +49,8 @@ export async function listDocuments(limit = 50) {
   if (sheetsConfigured()) {
     try {
       const docs = await getSheetDocuments(limit);
-      if (docs.length) return docs;
+      const clean = cleanDocuments(docs, limit);
+      if (clean.length) return clean;
     } catch {
       // Fall through to the next configured store or demo memory.
     }
@@ -53,12 +59,12 @@ export async function listDocuments(limit = 50) {
     try {
       const prisma = await getPrisma();
       const docs = await prisma.document.findMany({ orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }], take: limit });
-      return docs.map(fromDb);
+      return cleanDocuments(docs.map(fromDb), limit);
     } catch {
-      return memoryDocuments.slice(0, limit);
+      return cleanDocuments(memoryDocuments, limit);
     }
   }
-  return memoryDocuments.slice(0, limit);
+  return cleanDocuments(memoryDocuments, limit);
 }
 
 export async function getDocument(id: string) {
@@ -67,20 +73,21 @@ export async function getDocument(id: string) {
 }
 
 export async function upsertDocuments(documents: IntelligenceDocument[]) {
+  const usableDocuments = documents.filter(isUsableEvidence).map(sanitizeDocumentDates);
   const existing = new Set(memoryDocuments.map((doc) => doc.hashKey));
-  for (const doc of documents) {
+  for (const doc of usableDocuments) {
     if (!existing.has(doc.hashKey)) memoryDocuments.unshift(doc);
   }
   if (sheetsConfigured()) {
     try {
-      await upsertSheetDocuments(documents);
+      await upsertSheetDocuments(usableDocuments);
     } catch {
       // Keep local/demo mode resilient if Sheets is unavailable.
     }
   }
   if (dbEnabled()) {
     const prisma = await getPrisma();
-    for (const doc of documents) {
+    for (const doc of usableDocuments) {
       const publishedAt = doc.publishedAt ? new Date(doc.publishedAt) : null;
       const fetchedAt = new Date(doc.fetchedAt);
       await prisma.document.upsert({
@@ -110,5 +117,5 @@ export async function upsertDocuments(documents: IntelligenceDocument[]) {
       });
     }
   }
-  return documents.length;
+  return usableDocuments.length;
 }

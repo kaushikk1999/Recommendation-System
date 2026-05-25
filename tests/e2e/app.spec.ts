@@ -42,6 +42,15 @@ test("NALCO extraction handles missing dates without inventing one", () => {
   expect(doc.rawText).toContain("Shareholder services");
 });
 
+test("NALCO extraction filters utility pages and cleans PDF metadata", async ({ request }) => {
+  const utility = await request.get("/api/search?q=Latest%20NALCO%20News");
+  expect(utility.ok()).toBeTruthy();
+  const search = await utility.json();
+  const titles = search.results.map((item: { doc: { title: string; url: string } }) => `${item.doc.title} ${item.doc.url}`).join("\n");
+  expect(titles).not.toMatch(/Help|Privacy Policy|Legal Disclaimer|Vigilance/i);
+  expect(titles).not.toMatch(/Size:\s*[\d.]+\s*(KB|MB),\s*Format:\s*PDF/i);
+});
+
 async function monitorPage(page: Page) {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -97,8 +106,8 @@ test("chatbot opens, answers suggested prompt, and renders citations", async ({ 
   await page.getByRole("button", { name: "Open NALCO assistant" }).click();
   await expect(page.getByText("NALCO Intelligence Assistant", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Aluminium Market" }).click();
-  await expect(page.getByText(/Confidence/i)).toBeVisible();
-  await expect(page.getByRole("link", { name: /\[1\]/ })).toBeVisible();
+  await expect(page.getByText(/Confidence/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("link", { name: /\[1\]/ })).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: "Collapse chat" }).click();
   await expect(page.getByText("NALCO Intelligence Assistant", { exact: true })).not.toBeVisible();
@@ -193,15 +202,56 @@ test("api routes return expected JSON and validation errors", async ({ request }
 
   const chat = await request.post("/api/chat", { data: { question: "What aluminium news could affect NALCO?" } });
   expect(chat.ok()).toBeTruthy();
-  await expect(await chat.json()).toHaveProperty("citations");
+  const chatJson = await chat.json();
+  expect(chatJson).toHaveProperty("citations");
+  expect(["completed", "completed_with_warnings", "failed"]).toContain(chatJson.liveRefreshStatus);
+  expect(typeof chatJson.liveFetchedAt).toBe("string");
+  expect(typeof chatJson.liveFetchedCount).toBe("number");
+
+  const recentChange = await request.post("/api/chat", { data: { question: "What changed in NALCO recently?" } });
+  expect(recentChange.ok()).toBeTruthy();
+  const recentChangeJson = await recentChange.json();
+  expect(recentChangeJson.answer).not.toBe("I could not verify this from available sources.");
+  expect(recentChangeJson.citations.length).toBeGreaterThan(0);
+
+  const streamChat = await request.post("/api/chat/stream", { data: { question: "Risk Summary" } });
+  expect(streamChat.ok()).toBeTruthy();
+  const streamText = await streamChat.text();
+  expect(streamText).toContain("event: status");
+  expect(streamText).toContain("event: delta");
+  expect(streamText).toContain("event: metadata");
+  expect(streamText).toContain("event: done");
 
   const privateClaim = await request.post("/api/chat", { data: { question: "Tell me about a private undisclosed NALCO contract with Apple" } });
   expect(privateClaim.ok()).toBeTruthy();
-  expect((await privateClaim.json()).answer).toBe("I could not verify this from available sources.");
+  const privateJson = await privateClaim.json();
+  expect(privateJson.answer).toBe("I could not verify this from available sources.");
+  expect(privateJson.confidence).toBe(0);
+  expect(privateJson.citations).toEqual([]);
 
   const livePrice = await request.post("/api/chat", { data: { question: "What is the current live aluminium price today?" } });
   expect(livePrice.ok()).toBeTruthy();
-  expect((await livePrice.json()).answer).toBe("I could not verify this from available sources.");
+  const livePriceJson = await livePrice.json();
+  expect(livePriceJson.answer).toBe("I could not verify this from available sources.");
+  expect(livePriceJson.confidence).toBe(0);
+  expect(livePriceJson.citations).toEqual([]);
+
+  for (const prompt of ["Latest NALCO News", "Recent Filings", "Aluminium Market", "Risk Summary", "Entity Map"]) {
+    const promptChat = await request.post("/api/chat", { data: { question: prompt } });
+    expect(promptChat.ok()).toBeTruthy();
+    const body = await promptChat.json();
+    expect(["completed", "completed_with_warnings", "failed"]).toContain(body.liveRefreshStatus);
+    expect(typeof body.liveFetchedAt).toBe("string");
+    expect(Array.isArray(body.liveRefreshErrors)).toBeTruthy();
+    const citationText = (body.citations || []).map((citation: { title: string; url: string }) => `${citation.title} ${citation.url}`).join("\n");
+    expect(citationText).not.toMatch(/Help|Privacy Policy|Legal Disclaimer|Vigilance/i);
+    if (body.answer === "I could not verify this from available sources.") {
+      expect(body.confidence).toBe(0);
+      expect(body.citations).toEqual([]);
+    } else if (prompt === "Entity Map") {
+      expect(body.entities.length).toBeGreaterThan(0);
+    }
+  }
 
   const badChat = await request.post("/api/chat", { data: { question: "" } });
   expect(badChat.status()).toBe(400);

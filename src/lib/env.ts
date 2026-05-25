@@ -22,7 +22,8 @@ const envSchema = z.object({
   NEXT_PUBLIC_APP_NAME: z.string().default("NALCO Intelligence Bot"),
   APP_BASE_URL: z.string().default("http://localhost:3000"),
   ENABLE_LIVE_INGEST: z.coerce.boolean().default(true),
-  ENABLE_PAGE_LOAD_INGEST: z.coerce.boolean().default(true)
+  ENABLE_PAGE_LOAD_INGEST: z.coerce.boolean().default(true),
+  NALCO_MOCK_LIVE_SOURCES: z.coerce.boolean().default(false)
 }).transform((value) => ({
   ...value,
   SCRAPER_USER_AGENT: value.SCRAPER_USER_AGENT || value.INGEST_USER_AGENT || "NALCO-Intelligence-Bot/1.0 (+public-demo)"
